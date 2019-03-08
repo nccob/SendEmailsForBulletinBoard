@@ -11,11 +11,10 @@ using System.Web;
 using System.Data.SqlClient;
 using Microsoft.Win32;
 
-namespace SendEmailsFromNCCOB
+namespace SendEmailsForBulletinBoard
 {
     class Program
     {
-        private static List<MessageMeta> MessageList;
         private static RegistryKey regkey = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry64).OpenSubKey(@"SOFTWARE\NCCOBOnline");
 
         private static string _dbServer = System.Configuration.ConfigurationManager.AppSettings["server"];
@@ -27,102 +26,208 @@ namespace SendEmailsFromNCCOB
         private const int CONNECTION_TIMEOUT = 120;
         private static string _dbConnString;
 
+        private static int _RecipientsPerDayLimit;
+        private static int _RecipientsPerEmailLimit;
+        private static int _EmailsPerMinuteLimit;
+        private static bool _AllowTestEmails = (_dbServer != "10.53.16.21");
+        private static bool _ErrorRaised;
 
+        private static int _RecipientsSentToday;
+        private static int _EmailsForCompanyContactsWaiting;
+        private static int _EmailsForSubscribersWaiting;
+        private static int _EmailsToSendForCompanyContacts;
+        private static int _EmailsToSendForSubscribers;
+
+        private static SqlConnection DbConnection = null;
+        private static SqlCommand DbCommand = null;
+        private static SqlDataReader DbReader = null;
 
         static void Main(string[] args)
         {
-            //TODO: Add error handling
-            
-                ProcessUnsentEmails();
-           
-            
-        }
-
-        private static void ProcessUnsentEmails()
-        { 
-            //get dataset of emails to send
-            GetData();
-            
-            //For each MessageMeta object call Send Email
-            foreach (MessageMeta _mm in MessageList)
-            {
-                SendEmail(_mm);
-            }
-        }
-
-        private static void GetData()
-        {
-            ////OdbcConnection DbConnection = null;
-            ////OdbcConnection DbConnection2 = null;
-            ////OdbcCommand DbCommand = null;
-            ////OdbcDataReader DbReader = null;
-            ////OdbcCommand DbCommand2 = null;
-            ////OdbcDataReader DbReader2 = null;
-
-            SqlConnection DbConnection = null;
-            SqlConnection DbConnection2 = null;
-            SqlCommand DbCommand = null;
-            SqlDataReader DbReader = null;
-            SqlCommand DbCommand2 = null;
-            SqlDataReader DbReader2 = null;
-
-            try
-            {
-
-                 _dbConnString = "server=\'" + _dbServer + "\'; user id=\'" +
+            _dbConnString = "server=\'" + _dbServer + "\'; user id=\'" +
                     _dbUser + "\'; password=\'" + _dbPassword + "\'; Database=\'" +
                     _dbName + "\';connection timeout=" + CONNECTION_TIMEOUT +
                     "; MultipleActiveResultSets=True; Max Pool Size = 1000; Pooling = True;";
 
+            ProcessUnsentEmails();
+            
+        }
 
-                //DbConnection = new OdbcConnection("DSN=" + ConfigurationManager.AppSettings["NCCOB_DSN"].ToString() + ";UID=" + UID + ";PWD=" + PWD + ";");
-                //DbConnection.Open();
+        private static void ProcessUnsentEmails()
+        {
+
+            SetLimits();
+
+            while (!_ErrorRaised)
+            {
+                GetCurrentTally();
+
+                if (_RecipientsSentToday >= _RecipientsPerDayLimit)  //Daily Limit
+                    break;
+                
+                if (_EmailsForCompanyContactsWaiting + _EmailsForSubscribersWaiting == 0) //No more to send
+                    break;
+
+                if (_EmailsForCompanyContactsWaiting > 0)
+                    PrepareCompanyContactEmail();
+                else
+                    PrepareSubscriberEmail();
+
+                System.Threading.Thread.Sleep(10000); /*wait 10 seconds and run again so we never hit the email per minute limit*/
+            }
+
+        }
+
+        private static void SetLimits()
+        {  
+            try
+            {
                 DbConnection = new SqlConnection(_dbConnString);
                 DbConnection.Open();
-
                 DbCommand = DbConnection.CreateCommand();
-                DbCommand.CommandText = "SELECT * FROM EmailsFromApp where SentDate is null and ErrorCount <= 5 and ToEmail not like '%@test%' and ToEmail not like '%.test.%' "; 
+                DbCommand.CommandText = "SELECT * FROM RefValues where RefType = 'EmailAccountLimits'";
                 DbReader = DbCommand.ExecuteReader();
-
-                //Create list of MessageMeta object
-                MessageList = new List<MessageMeta>();
                 while (DbReader.Read())
                 {
-                    MessageMeta _mm = new MessageMeta();
-                    _mm.ID = Convert.ToInt32(DbReader["ID"]);
-                    _mm.BCC = DbReader["BCC"] != null ? DbReader["BCC"].ToString() : "";
-                    _mm.CC = DbReader["CC"] != null ? DbReader["CC"].ToString() : "";
-                    _mm.EmailText = DbReader["EmailText"] != null ? HttpUtility.HtmlDecode(DbReader["EmailText"].ToString()) : "";
-                    _mm.From = DbReader["FromEmail"] != null ? DbReader["FromEmail"].ToString() : "";
-                    _mm.Subject = DbReader["Subject"] != null ? DbReader["Subject"].ToString() : "";
-                    _mm.To = DbReader["ToEmail"] != null ? DbReader["ToEmail"].ToString() : "";
-                    _mm.ErrorCount = DbReader.IsDBNull(DbReader.GetOrdinal("ErrorCount")) ? 0 : Convert.ToInt32(DbReader["ErrorCount"]);
-
-                    //clean up the To when there are multiple email addresses separated by semicolons.
-                    _mm.To = _mm.To.Replace(';', ',');
-
-                    //DbConnection2 = new OdbcConnection("DSN=" + ConfigurationManager.AppSettings["NCCOB_DSN"].ToString() + ";UID=" + UID + ";PWD=" + PWD + ";");
-                    DbConnection2 = new SqlConnection(_dbConnString);
-                    DbConnection2.Open();
-                    DbCommand2 = DbConnection2.CreateCommand();
-                    DbCommand2.CommandText = "SELECT * FROM EmailsFromAppAttachment where EmailsFromAppID = " + _mm.ID.ToString();
-                    DbReader2 = DbCommand2.ExecuteReader();
-                    while (DbReader2.Read())
+                    switch (DbReader["RefName"].ToString())
                     {
-                        string _fileName = DbReader2["FileName"].ToString();
-                        Byte[] _fileData  = (Byte[])DbReader2["FileData"];
-                        MessageAttachment _a = new MessageAttachment();
-                        _a.FileName = _fileName;
-                        _a.FileData = _fileData;
-                        _mm.FilesToAttach.Add(_a);
+                        case "RecipientsPerDay":
+                            _RecipientsPerDayLimit = Convert.ToInt32(DbReader["RefValue"]);
+                            break;
+                        case "RecipientsPerEmail":
+                            _RecipientsPerEmailLimit = Convert.ToInt32(DbReader["RefValue"]);
+                            break;
+                        case "EmailsPerMinute":
+                            _EmailsPerMinuteLimit = Convert.ToInt32(DbReader["RefValue"]);
+                            break;
                     }
-
-                    MessageList.Add(_mm);
                 }
             }
             catch (Exception ex)
             {
-                string err = "Error Caught in SendEmailsFromNCCOB application\n" +
+                _ErrorRaised = true;
+
+                string err = "Error Caught in SendEmailsForBulletinBoard application\n" +
+                        "Error in: ProcessUnsentEmails()" +
+                        "\nError Message:" + ex.Message.ToString() +
+                        "\nStack Trace:" + ex.StackTrace.ToString();
+                EventLog.WriteEntry("NCCOBApp", err, EventLogEntryType.Error);
+
+            }
+            finally
+            {
+                if (DbReader != null) DbReader.Close();
+                if (DbCommand != null) DbCommand.Dispose();
+                if (DbConnection != null) DbConnection.Close();
+            }
+        }
+
+        private static void GetCurrentTally()
+        {
+            try
+            {
+                DbConnection = new SqlConnection(_dbConnString);
+                DbConnection.Open();
+                DbCommand = DbConnection.CreateCommand();
+                DbCommand.CommandText = @"select count(*) [RecipientsSentToday] 
+                                            from BBEmail
+                                            where SentDate > convert(varchar(10), getdate(), 101)";
+
+                DbReader = DbCommand.ExecuteReader();
+                while (DbReader.Read())
+                {
+                    _RecipientsSentToday = Convert.ToInt32(DbReader["RecipientsSentToday"]);                           
+                }
+                if (DbReader != null) DbReader.Close();
+
+                DbCommand.CommandText = @"select 
+	                                        sum(case when ContactID is not null then 1 else 0 end) [EmailsToSendtoCompanyContacts],
+	                                        sum(case when BBSubscriberID is not null then 1 else 0 end) [EmailsToSendtoSubscribers]
+                                        from 
+                                            BBEmail
+                                        where 
+                                            SentDate is null";
+
+                if (!_AllowTestEmails)
+                {
+                    DbCommand.CommandText += @"and EmailAddressTo not like '%@test%'
+                                            and EmailAddressTo not like '%.test.%'";
+                }
+
+                DbReader = DbCommand.ExecuteReader();
+                while (DbReader.Read())
+                {
+                    _EmailsForCompanyContactsWaiting = DbReader["EmailsToSendtoCompanyContacts"] != DBNull.Value ? Convert.ToInt32(DbReader["EmailsToSendtoCompanyContacts"]) : 0;
+                    _EmailsForSubscribersWaiting = DbReader["EmailsToSendtoSubscribers"] != DBNull.Value ? Convert.ToInt32(DbReader["EmailsToSendtoSubscribers"]): 0;
+                }
+
+                _EmailsToSendForCompanyContacts = Math.Min(_RecipientsPerDayLimit - _RecipientsSentToday, _EmailsForCompanyContactsWaiting);
+                _EmailsToSendForSubscribers = Math.Min(_RecipientsPerDayLimit - _RecipientsSentToday - _EmailsToSendForCompanyContacts, _EmailsForSubscribersWaiting);
+            }
+            catch (Exception ex)
+            {
+                _ErrorRaised = true;
+
+                string err = "Error Caught in SendEmailsForBulletinBoard application\n" +
+                        "Error in: ProcessUnsentEmails()" +
+                        "\nError Message:" + ex.Message.ToString() +
+                        "\nStack Trace:" + ex.StackTrace.ToString();
+                EventLog.WriteEntry("NCCOBApp", err, EventLogEntryType.Error);
+            }
+            finally
+            {
+                if (DbReader != null) DbReader.Close();
+                if (DbCommand != null) DbCommand.Dispose();
+                if (DbConnection != null) DbConnection.Close();
+            }
+        }
+
+
+
+        private static void PrepareCompanyContactEmail()
+        {  
+            try
+            {
+
+                DbConnection = new SqlConnection(_dbConnString);
+                
+                string sql = "exec mlsadmin.BBRetrieveCompanyContactEmailList " + _EmailsToSendForCompanyContacts.ToString() + ";";
+
+                DbCommand = DbConnection.CreateCommand();
+                DbCommand.CommandText = sql;
+                //DbCommand.CommandType = CommandType.StoredProcedure;
+
+                //DbCommand.Parameters.Add(new SqlParameter("CountToRetrieve", _EmailsToSendForCompanyContacts));
+
+                DbConnection.Open();
+                DbReader = DbCommand.ExecuteReader();
+
+                while (DbReader.Read())
+                {
+                    MessageMeta _mm = new MessageMeta();
+                    _mm.To = DbReader["EmailAddressFrom"] != DBNull.Value ? DbReader["EmailAddressFrom"].ToString() : "";
+                    _mm.From = DbReader["EmailAddressFrom"] != DBNull.Value ? DbReader["EmailAddressFrom"].ToString() : "";
+                    _mm.BCC = DbReader["BBCList"] != DBNull.Value ? DbReader["BBCList"].ToString() : "";
+                    _mm.CC = System.Configuration.ConfigurationManager.AppSettings["ccemailaddress"];
+                    _mm.EmailText = DbReader["Body"] != DBNull.Value ? HttpUtility.HtmlDecode(DbReader["Body"].ToString()) : "";
+                    _mm.Subject = DbReader["EmailSubject"] != DBNull.Value ? DbReader["EmailSubject"].ToString() : "";
+
+                    SendEmail(_mm);
+                }
+                if (DbReader != null) DbReader.Close();
+                if (DbCommand != null) DbCommand.Dispose();
+                if (DbConnection != null) DbConnection.Close();
+
+                DbConnection.Open();
+                DbCommand.CommandText = @"update BBEmail set SentDate=getdate(), FlagToSend=0 where FlagToSend = 1 and ContactID is not null";
+                DbCommand.ExecuteNonQuery();
+
+            }
+            catch (Exception ex)
+            {
+                _ErrorRaised = true;
+
+                string err = "Error Caught in SendEmailsForBulletinBoard application\n" +
                         "Error in: GetData()" +
                         "\nError Message:" + ex.Message.ToString() +
                         "\nStack Trace:" + ex.StackTrace.ToString();
@@ -133,12 +238,63 @@ namespace SendEmailsFromNCCOB
                 if (DbReader != null) DbReader.Close();
                 if (DbCommand != null) DbCommand.Dispose();
                 if (DbConnection != null) DbConnection.Close();
-                if (DbReader2 != null) DbReader2.Close();
-                if (DbCommand2 != null) DbCommand2.Dispose();
-                if (DbConnection2 != null) DbConnection2.Close();
+                
             }
         }
-               
+
+        private static void PrepareSubscriberEmail()
+        {
+            try
+            {
+                string UnsubscribeURL = System.Configuration.ConfigurationManager.AppSettings["UnsubscribeURL"];
+
+                DbConnection = new SqlConnection(_dbConnString);
+                DbConnection.Open();
+
+                DbCommand = DbConnection.CreateCommand();
+                DbCommand.CommandText = @"exec mlsadmin.BBRetrieveSubscriberEmailList " + _EmailsToSendForSubscribers.ToString() + ",'" + UnsubscribeURL + "';";
+                DbReader = DbCommand.ExecuteReader();
+
+                while (DbReader.Read())
+                {
+                    MessageMeta _mm = new MessageMeta();
+                    _mm.To = DbReader["EmailAddressTo"] != DBNull.Value ? DbReader["EmailAddressTo"].ToString() : "";
+                    _mm.From = DbReader["EmailAddressFrom"] != DBNull.Value ? DbReader["EmailAddressFrom"].ToString() : "";
+                    _mm.BCC = System.Configuration.ConfigurationManager.AppSettings["ccemailaddress"];
+                    _mm.EmailText = DbReader["Body"] != DBNull.Value ? HttpUtility.HtmlDecode(DbReader["Body"].ToString()) : "";
+                    _mm.Subject = DbReader["EmailSubject"] != DBNull.Value ? DbReader["EmailSubject"].ToString() : "";
+
+                    SendEmail(_mm);
+
+                    SqlCommand DbCommand2 = null;
+                    DbCommand2 = DbConnection.CreateCommand();
+                    DbCommand2.CommandText = @"update BBEmail set SentDate=getdate(), FlagToSend=0 where FlagToSend = 1 and id = " + DbReader["ID"].ToString();
+                    DbCommand2.ExecuteNonQuery();
+                    DbCommand2.Dispose();
+                }
+
+
+            }
+            catch (Exception ex)
+            {
+                _ErrorRaised = true;
+
+                string err = "Error Caught in SendEmailsForBulletinBoard application\n" +
+                        "Error in: GetData()" +
+                        "\nError Message:" + ex.Message.ToString() +
+                        "\nStack Trace:" + ex.StackTrace.ToString();
+                EventLog.WriteEntry("NCCOBApp", err, EventLogEntryType.Error);
+            }
+            finally
+            {
+                if (DbReader != null) DbReader.Close();
+                if (DbCommand != null) DbCommand.Dispose();
+                if (DbConnection != null) DbConnection.Close();
+
+            }
+        }
+
+
 
         private static void SendEmail(MessageMeta _meta)
         {
@@ -151,24 +307,11 @@ namespace SendEmailsFromNCCOB
                 {
                     MailMessage message = new MailMessage(_meta.From, _meta.To, _meta.Subject, _meta.EmailText);
                     message.IsBodyHtml = true;
-                    if (_meta.CC != string.Empty)
+                    if (!String.IsNullOrWhiteSpace(_meta.CC))
                         message.CC.Add(_meta.CC);
 
-                    if (_meta.BCC != string.Empty)
-                        message.Bcc.Add(_meta.BCC);
-
-                    if (_meta.FilesToAttach != null && _meta.FilesToAttach.Count > 0)
-                    {
-                        foreach (MessageAttachment _a in _meta.FilesToAttach)
-                        {
-                            MemoryStream memoryStream = new MemoryStream();
-                            memoryStream.Write(_a.FileData, 0, _a.FileData.Length);
-                            memoryStream.Seek(0, SeekOrigin.Begin);
-
-                            Attachment _attachment = new Attachment(memoryStream, _a.FileName);
-                            message.Attachments.Add(_attachment);
-                        }
-                    }
+                    if (!String.IsNullOrWhiteSpace(_meta.BCC))
+                        message.Bcc.Add(_meta.BCC);                    
 
                     SmtpClient emailClient;
                     emailClient = new SmtpClient(ConfigurationManager.AppSettings["smtpserver"], 25);
@@ -176,92 +319,23 @@ namespace SendEmailsFromNCCOB
                     emailClient.DeliveryMethod = SmtpDeliveryMethod.Network;
                     emailClient.Send(message);
 
-                    Update(_meta, false);
-
                 }
             }
             catch (Exception ex)
             {
-                string err = "Error Caught in SendEmailsFromNCCOB application\n" +
+                _ErrorRaised = true;
+
+                string err = "Error Caught in SendEmailsForBulletinBoard application\n" +
                         "Error in: SendEmail()" +
                         "\nError Message:" + ex.Message.ToString() +
                         "\nStack Trace:" + ex.StackTrace.ToString();
                 EventLog.WriteEntry("NCCOBApp", err, EventLogEntryType.Error);
-
-                _meta.ErrorCount++;
-
-                Update(_meta, true);
-
-                //send the message to the developers only on the fifth error.  That way the developers may not have to get involved.
-                if (_meta.ErrorCount == 5)
-                {
-                    //Need to do a little adjusting and to notify IT
-                    string note = @"This email failed when sending to <b>'" + _meta.To + @"'</b>.  Take a look to see if you can determine 
-                                what's wrong with the email address and then manually send if you can.  The application will try to resend the original 
-                                email for about 3 minutes.<br/><hr/><br/><b>Subject:</b> " + _meta.Subject;
-
-                    _meta.To = "NCCOBDevelopers@nccob.gov";
-                    //_meta.To = "ssnively@nccob.gov";
-                    _meta.EmailText = note + "<br/><b>Email Body:</b> " + _meta.EmailText;
-                    _meta.Subject = "Auto Email Send Error";
-
-                    SendEmail(_meta);
-
-                }
-                                
+                
             }
         
            
         }
 
-        private static void Update(MessageMeta _meta, bool HadError)
-        {
-            SqlConnection DbConnection = null;
-            SqlCommand DbCommand = null;
-            DbConnection = new SqlConnection(_dbConnString);
-            DbConnection.Open();
-
-            //OdbcConnection DbConnection = null;
-            //OdbcCommand DbCommand = null;
-            //DbConnection = new OdbcConnection("DSN=" + ConfigurationManager.AppSettings["NCCOB_DSN"].ToString() + ";UID=" + UID + ";PWD=" + PWD + ";");
-            //DbConnection.Open();
-            //System.Data.Odbc.OdbcTransaction _tran = DbConnection.BeginTransaction();
-                
-            try
-            {
-                string sql = "";
-
-                if (HadError)
-                    sql = "Update EmailsFromApp set haderror = 1, ErrorCount= " + _meta.ErrorCount.ToString() + " where id = " + _meta.ID.ToString();
-                else
-                    sql = "Update EmailsFromApp set SentDate = getdate() where id = " + _meta.ID.ToString();
-
-
-                DbCommand = DbConnection.CreateCommand();
-                //DbCommand.Transaction = _tran;
-                DbCommand.CommandText = sql;
-                DbCommand.ExecuteNonQuery();
-
-                //throw new Exception("test");
-
-                //_tran.Commit();
-                
-            }
-            catch (Exception ex)
-            {
-                //_tran.Rollback();
-                string err = "Error Caught in SendEmailsFromNCCOB application\n" +
-                        "Error in: Update()" +
-                        "\nError Message:" + ex.Message.ToString() +
-                        "\nStack Trace:" + ex.StackTrace.ToString();
-                EventLog.WriteEntry("SendEmailsFromNCCOB", err, EventLogEntryType.Error);
-            }
-            finally
-            {
-                DbCommand.Dispose();
-                DbConnection.Close();
-            }
-        }
     }
 
     class MessageMeta
@@ -272,15 +346,8 @@ namespace SendEmailsFromNCCOB
         public string From { get; set; }
         public string CC { get; set; }
         public string BCC { get; set; }
-        public int ID { get; set; }
-        public List<MessageAttachment> FilesToAttach = new List<MessageAttachment>();
-
-        public int ErrorCount { get; set; }
+        
     }
 
-    class MessageAttachment
-    {
-        public string FileName { get; set; }
-        public Byte[] FileData { get; set; }
-    }
+
 }
