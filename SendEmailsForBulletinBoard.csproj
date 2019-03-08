@@ -8,8 +8,8 @@
     <ProjectGuid>{E37275A9-9D8F-44A6-9BF2-D278A303FF2D}</ProjectGuid>
     <OutputType>Exe</OutputType>
     <AppDesignerFolder>Properties</AppDesignerFolder>
-    <RootNamespace>SendEmailsFromNCCOB</RootNamespace>
-    <AssemblyName>SendEmailsFromNCCOB</AssemblyName>
+    <RootNamespace>SendEmailsForBulletinBoardTask</RootNamespace>
+    <AssemblyName>SendEmailsForBulletinBoardTask</AssemblyName>
     <TargetFrameworkVersion>v4.6.1</TargetFrameworkVersion>
     <FileAlignment>512</FileAlignment>
     <IsWebBootstrapper>false</IsWebBootstrapper>
