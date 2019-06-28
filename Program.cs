@@ -146,7 +146,7 @@ namespace SendEmailsForBulletinBoard
                                         from 
                                             BBEmail
                                         where 
-                                            SentDate is null";
+                                            SentDate is null ";
 
                 if (!_AllowTestEmails)
                 {
@@ -169,7 +169,7 @@ namespace SendEmailsForBulletinBoard
                 _ErrorRaised = true;
 
                 string err = "Error Caught in SendEmailsForBulletinBoard application\n" +
-                        "Error in: ProcessUnsentEmails()" +
+                        "Error in: GetCurrentTally()" +
                         "\nError Message:" + ex.Message.ToString() +
                         "\nStack Trace:" + ex.StackTrace.ToString();
                 EventLog.WriteEntry("NCCOBApp", err, EventLogEntryType.Error);
@@ -260,7 +260,7 @@ namespace SendEmailsForBulletinBoard
                     MessageMeta _mm = new MessageMeta();
                     _mm.To = DbReader["EmailAddressTo"] != DBNull.Value ? DbReader["EmailAddressTo"].ToString() : "";
                     _mm.From = DbReader["EmailAddressFrom"] != DBNull.Value ? DbReader["EmailAddressFrom"].ToString() : "";
-                    _mm.BCC = System.Configuration.ConfigurationManager.AppSettings["ccemailaddress"];
+                    //_mm.BCC = System.Configuration.ConfigurationManager.AppSettings["ccemailaddress"];
                     _mm.EmailText = DbReader["Body"] != DBNull.Value ? HttpUtility.HtmlDecode(DbReader["Body"].ToString()) : "";
                     _mm.Subject = DbReader["EmailSubject"] != DBNull.Value ? DbReader["EmailSubject"].ToString() : "";
 
