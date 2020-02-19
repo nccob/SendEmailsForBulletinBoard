@@ -108,7 +108,7 @@ namespace SendEmailsForBulletinBoard
                 _ErrorRaised = true;
 
                 string err = "Error Caught in SendEmailsForBulletinBoard application\n" +
-                        "Error in: ProcessUnsentEmails()" +
+                        "Error in: SetLimits()" +
                         "\nError Message:" + ex.Message.ToString() +
                         "\nStack Trace:" + ex.StackTrace.ToString();
                 EventLog.WriteEntry("NCCOBApp", err, EventLogEntryType.Error);
@@ -188,7 +188,6 @@ namespace SendEmailsForBulletinBoard
         {  
             try
             {
-
                 DbConnection = new SqlConnection(_dbConnString);
                 
                 string sql = "exec mlsadmin.BBRetrieveCompanyContactEmailList " + _EmailsToSendForCompanyContacts.ToString() + ";";
@@ -205,14 +204,18 @@ namespace SendEmailsForBulletinBoard
                 while (DbReader.Read())
                 {
                     MessageMeta _mm = new MessageMeta();
-                    _mm.To = DbReader["EmailAddressFrom"] != DBNull.Value ? DbReader["EmailAddressFrom"].ToString() : "";
+                    _mm.To = DbReader["EmailAddressFrom"] != DBNull.Value ? DbReader["EmailAddressFrom"].ToString() : "";  /*Yes, the from is the to since we are using the BCC*/
                     _mm.From = DbReader["EmailAddressFrom"] != DBNull.Value ? DbReader["EmailAddressFrom"].ToString() : "";
-                    _mm.BCC = DbReader["BBCList"] != DBNull.Value ? DbReader["BBCList"].ToString() : "";
+                    _mm.BCC = DbReader["BCCList"] != DBNull.Value ? DbReader["BCCList"].ToString() : "";
                     _mm.CC = System.Configuration.ConfigurationManager.AppSettings["ccemailaddress"];
                     _mm.EmailText = DbReader["Body"] != DBNull.Value ? HttpUtility.HtmlDecode(DbReader["Body"].ToString()) : "";
                     _mm.Subject = DbReader["EmailSubject"] != DBNull.Value ? DbReader["EmailSubject"].ToString() : "";
 
-                    SendEmail(_mm);
+                    bool _sendEmailWorked;
+                    _sendEmailWorked = SendEmail(_mm);
+
+                    if (!_sendEmailWorked)
+                        throw new Exception("There was an error sending the Company Contact Emails: " + _mm.BCC);
                 }
                 if (DbReader != null) DbReader.Close();
                 if (DbCommand != null) DbCommand.Dispose();
@@ -228,7 +231,7 @@ namespace SendEmailsForBulletinBoard
                 _ErrorRaised = true;
 
                 string err = "Error Caught in SendEmailsForBulletinBoard application\n" +
-                        "Error in: GetData()" +
+                        "Error in: PrepareCompanyContactEmail()" +
                         "\nError Message:" + ex.Message.ToString() +
                         "\nStack Trace:" + ex.StackTrace.ToString();
                 EventLog.WriteEntry("NCCOBApp", err, EventLogEntryType.Error);
@@ -246,6 +249,8 @@ namespace SendEmailsForBulletinBoard
         {
             try
             {
+                string EmailNotSentToIDs = "";
+
                 string UnsubscribeURL = System.Configuration.ConfigurationManager.AppSettings["UnsubscribeURL"];
 
                 DbConnection = new SqlConnection(_dbConnString);
@@ -264,11 +269,15 @@ namespace SendEmailsForBulletinBoard
                     _mm.EmailText = DbReader["Body"] != DBNull.Value ? HttpUtility.HtmlDecode(DbReader["Body"].ToString()) : "";
                     _mm.Subject = DbReader["EmailSubject"] != DBNull.Value ? DbReader["EmailSubject"].ToString() : "";
 
-                    SendEmail(_mm);
+                    bool _sendEmailWorked;
+                    _sendEmailWorked = SendEmail(_mm);
+
+                    if (!_sendEmailWorked)
+                        EmailNotSentToIDs += DbReader["ID"].ToString() + ",";
 
                     SqlCommand DbCommand2 = null;
                     DbCommand2 = DbConnection.CreateCommand();
-                    DbCommand2.CommandText = @"update BBEmail set SentDate=getdate(), FlagToSend=0 where FlagToSend = 1 and id = " + DbReader["ID"].ToString();
+                    DbCommand2.CommandText = @"update BBEmail set SentDate=getdate(), FlagToSend=0 where FlagToSend = 1 and id = " + DbReader["ID"].ToString() + " and ID not in (" + EmailNotSentToIDs.TrimEnd(',') + ")";
                     DbCommand2.ExecuteNonQuery();
                     DbCommand2.Dispose();
                 }
@@ -280,7 +289,7 @@ namespace SendEmailsForBulletinBoard
                 _ErrorRaised = true;
 
                 string err = "Error Caught in SendEmailsForBulletinBoard application\n" +
-                        "Error in: GetData()" +
+                        "Error in: PrepareSubscriberEmail()" +
                         "\nError Message:" + ex.Message.ToString() +
                         "\nStack Trace:" + ex.StackTrace.ToString();
                 EventLog.WriteEntry("NCCOBApp", err, EventLogEntryType.Error);
@@ -296,7 +305,7 @@ namespace SendEmailsForBulletinBoard
 
 
 
-        private static void SendEmail(MessageMeta _meta)
+        private static bool SendEmail(MessageMeta _meta)
         {
             try
             {
@@ -320,6 +329,8 @@ namespace SendEmailsForBulletinBoard
                     emailClient.Send(message);
 
                 }
+
+                return true;
             }
             catch (Exception ex)
             {
@@ -328,9 +339,12 @@ namespace SendEmailsForBulletinBoard
                 string err = "Error Caught in SendEmailsForBulletinBoard application\n" +
                         "Error in: SendEmail()" +
                         "\nError Message:" + ex.Message.ToString() +
-                        "\nStack Trace:" + ex.StackTrace.ToString();
+                        "\nStack Trace:" + ex.StackTrace.ToString() +
+                        "\nEmailAddressTo:" + _meta.To;
                 EventLog.WriteEntry("NCCOBApp", err, EventLogEntryType.Error);
-                
+
+                return false;
+
             }
         
            
