@@ -249,8 +249,6 @@ namespace SendEmailsForBulletinBoard
         {
             try
             {
-                string EmailNotSentToIDs = "";
-
                 string UnsubscribeURL = System.Configuration.ConfigurationManager.AppSettings["UnsubscribeURL"];
 
                 DbConnection = new SqlConnection(_dbConnString);
@@ -269,15 +267,19 @@ namespace SendEmailsForBulletinBoard
                     _mm.EmailText = DbReader["Body"] != DBNull.Value ? HttpUtility.HtmlDecode(DbReader["Body"].ToString()) : "";
                     _mm.Subject = DbReader["EmailSubject"] != DBNull.Value ? DbReader["EmailSubject"].ToString() : "";
 
+                    string _sql;
                     bool _sendEmailWorked;
                     _sendEmailWorked = SendEmail(_mm);
 
-                    if (!_sendEmailWorked)
-                        EmailNotSentToIDs += DbReader["ID"].ToString() + ",";
+                    if (_sendEmailWorked)
+                        _sql = "update BBEmail set SentDate = getdate(), FlagToSend = 0 where FlagToSend = 1 and id = " + DbReader["ID"].ToString();
+                    else
+                        _sql = "update BBEmail set FlagToSend = 0 where FlagToSend = 1 and id = " + DbReader["ID"].ToString();
+
 
                     SqlCommand DbCommand2 = null;
                     DbCommand2 = DbConnection.CreateCommand();
-                    DbCommand2.CommandText = @"update BBEmail set SentDate=getdate(), FlagToSend=0 where FlagToSend = 1 and id = " + DbReader["ID"].ToString() + " and ID not in (" + EmailNotSentToIDs.TrimEnd(',') + ")";
+                    DbCommand2.CommandText = _sql;
                     DbCommand2.ExecuteNonQuery();
                     DbCommand2.Dispose();
                 }
