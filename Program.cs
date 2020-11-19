@@ -73,7 +73,7 @@ namespace SendEmailsForBulletinBoard
                 else
                     PrepareSubscriberEmail();
 
-                System.Threading.Thread.Sleep(10000); /*wait 10 seconds and run again so we never hit the email per minute limit*/
+               // System.Threading.Thread.Sleep(10000); /*wait 10 seconds and run again so we never hit the email per minute limit*/
             }
 
         }
@@ -248,7 +248,7 @@ namespace SendEmailsForBulletinBoard
         private static void PrepareSubscriberEmail()
         {
             try
-            {
+            {                
                 string UnsubscribeURL = System.Configuration.ConfigurationManager.AppSettings["UnsubscribeURL"];
 
                 DbConnection = new SqlConnection(_dbConnString);
@@ -257,9 +257,9 @@ namespace SendEmailsForBulletinBoard
                 DbCommand = DbConnection.CreateCommand();
                 DbCommand.CommandText = @"exec mlsadmin.BBRetrieveSubscriberEmailList " + _EmailsToSendForSubscribers.ToString() + ",'" + UnsubscribeURL + "';";
                 DbReader = DbCommand.ExecuteReader();
-
+                                
                 while (DbReader.Read())
-                {
+                {                   
                     MessageMeta _mm = new MessageMeta();
                     _mm.To = DbReader["EmailAddressTo"] != DBNull.Value ? DbReader["EmailAddressTo"].ToString() : "";
                     _mm.From = DbReader["EmailAddressFrom"] != DBNull.Value ? DbReader["EmailAddressFrom"].ToString() : "";
@@ -329,6 +329,9 @@ namespace SendEmailsForBulletinBoard
 
                     emailClient.DeliveryMethod = SmtpDeliveryMethod.Network;
                     emailClient.Send(message);
+
+                    int _delaymiliseconds = 60/_EmailsPerMinuteLimit * 1000;
+                    System.Threading.Thread.Sleep(_delaymiliseconds); /*wait so we never hit the email per minute limit*/
 
                 }
 
